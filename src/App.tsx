@@ -37,8 +37,16 @@ import {
   clearUserHistoryInFirestore,
   saveSettingsToFirestore,
   fetchUserSettings,
+  subscribeToRoom,
+  ensureRoomInitialized,
+  updateRoomState,
+  broadcastRoomSpin,
+  broadcastRoomWinner,
 } from './services/firebaseService';
 import { AuthButton } from './components/AuthButton';
+import { SalaHeaderStatus } from './components/SalaHeaderStatus';
+import { SalaLoginModal } from './components/SalaLoginModal';
+import { SALA_ACCOUNTS, SalaAccount } from './types/wheel';
 import {
   Sparkles,
   Settings,
@@ -55,6 +63,8 @@ import {
   ArrowLeft,
   SlidersHorizontal,
   Cloud,
+  Radio,
+  Tv,
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -63,6 +73,8 @@ const STORAGE_KEYS = {
   SETTINGS: 'lucky_wheel_settings_v1',
   HISTORY: 'lucky_wheel_history_v1',
   BACKGROUND: 'lucky_wheel_bg_v1',
+  SALA_ROOM: 'lucky_wheel_sala_room_v1',
+  DISPLAY_MODE: 'lucky_wheel_display_mode_v1',
 };
 
 const DEFAULT_SETTINGS: WheelSettings = {
@@ -145,7 +157,134 @@ export default function App() {
   const [mobileView, setMobileView] = useState<'wheel' | 'items' | 'presets'>('wheel');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Real-Time Multi-Screen Room State (sala1, sala2, sala3)
+  const [currentRoomId, setCurrentRoomId] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.SALA_ROOM);
+      if (saved) return saved;
+    } catch {}
+    return 'sala1'; // Default connected to sala1
+  });
+
+  const [isDisplayMode, setIsDisplayMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.DISPLAY_MODE) === 'true';
+    } catch {}
+    return false;
+  });
+
+  const [showSalaLoginModal, setShowSalaLoginModal] = useState(false);
+  const [isRoomSyncing, setIsRoomSyncing] = useState(false);
+  const [externalSpinTrigger, setExternalSpinTrigger] = useState<{
+    timestamp: number;
+    targetWinnerId?: string;
+  } | null>(null);
+
+  const isRemoteUpdatingRef = useRef(false);
+  const lastSpinTriggerRef = useRef<number>(0);
   const wheelCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Synchronize localStorage for sala room and display mode
+  useEffect(() => {
+    try {
+      if (currentRoomId) {
+        localStorage.setItem(STORAGE_KEYS.SALA_ROOM, currentRoomId);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.SALA_ROOM);
+      }
+    } catch {}
+  }, [currentRoomId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.DISPLAY_MODE, String(isDisplayMode));
+    } catch {}
+  }, [isDisplayMode]);
+
+  // Real-Time Room Subscription via Firestore onSnapshot
+  useEffect(() => {
+    if (!currentRoomId) return;
+
+    setIsRoomSyncing(true);
+
+    const initialRoomData = {
+      roomId: currentRoomId,
+      pin: 'pass123456',
+      name: `ศาลา ${currentRoomId.replace('sala', '')} (${currentRoomId})`,
+      items,
+      activePresetId,
+      history,
+      settings,
+      bgConfig,
+      isSpinning: false,
+      updatedAt: Date.now(),
+      updatedBy: currentRoomId,
+    };
+
+    ensureRoomInitialized(currentRoomId, initialRoomData).catch((err) =>
+      console.error('Failed to initialize room in Firestore:', err)
+    );
+
+    const unsubscribe = subscribeToRoom(
+      currentRoomId,
+      (roomState) => {
+        setIsRoomSyncing(false);
+        if (!roomState) return;
+
+        isRemoteUpdatingRef.current = true;
+
+        if (roomState.items && Array.isArray(roomState.items)) {
+          setItems(roomState.items);
+        }
+        if (roomState.activePresetId) {
+          setActivePresetId(roomState.activePresetId);
+        }
+        if (roomState.settings) {
+          setSettings((prev) => ({ ...prev, ...roomState.settings }));
+        }
+        if (roomState.history && Array.isArray(roomState.history)) {
+          setHistory(roomState.history);
+        }
+        if (roomState.bgConfig) {
+          setBgConfig(roomState.bgConfig);
+        }
+
+        // Remote Spin Trigger detection
+        if (
+          roomState.spinTrigger &&
+          roomState.spinTrigger > lastSpinTriggerRef.current &&
+          Date.now() - roomState.spinTrigger < 15000
+        ) {
+          lastSpinTriggerRef.current = roomState.spinTrigger;
+          setExternalSpinTrigger({
+            timestamp: roomState.spinTrigger,
+            targetWinnerId: roomState.targetWinnerId,
+          });
+          setIsSpinning(true);
+        }
+
+        // Remote Winner detection
+        if (roomState.currentWinner && !isSpinning) {
+          setCurrentWinner((prev) => {
+            if (prev?.id !== roomState.currentWinner?.id) {
+              return roomState.currentWinner || null;
+            }
+            return prev;
+          });
+        }
+
+        setTimeout(() => {
+          isRemoteUpdatingRef.current = false;
+        }, 300);
+      },
+      (err) => {
+        setIsRoomSyncing(false);
+        console.error('Room subscription error:', err);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentRoomId]);
 
   // Subscribe to Firebase Auth and Sync Firestore data
   useEffect(() => {
@@ -272,6 +411,13 @@ export default function App() {
     setActivePresetId(preset.id);
     setItems([...preset.items]);
     if (settings.soundEnabled) playClickSound(settings.soundVolume);
+    if (currentRoomId && !isRemoteUpdatingRef.current) {
+      updateRoomState(currentRoomId, {
+        activePresetId: preset.id,
+        items: [...preset.items],
+        updatedBy: currentRoomId,
+      }).catch(console.error);
+    }
   };
 
   // Save current wheel as a new preset
@@ -329,16 +475,35 @@ export default function App() {
     }
   };
 
-  // Handle spin start
-  const handleSpinStart = useCallback(() => {
-    setIsSpinning(true);
-  }, []);
+  // Candidate items change from editor
+  const handleCandidateItemsChange = (newItems: WheelItem[]) => {
+    setItems(newItems);
+    if (currentRoomId && !isRemoteUpdatingRef.current) {
+      updateRoomState(currentRoomId, {
+        items: newItems,
+        updatedBy: currentRoomId,
+      }).catch(console.error);
+    }
+  };
+
+  // Handle spin start (broadcasts to all connected screens in room)
+  const handleSpinStart = useCallback(
+    (targetWinnerId?: string) => {
+      setIsSpinning(true);
+      if (currentRoomId) {
+        broadcastRoomSpin(currentRoomId, targetWinnerId || '', currentRoomId).catch((err) =>
+          console.error('Failed to broadcast spin start:', err)
+        );
+      }
+    },
+    [currentRoomId]
+  );
 
   // Current active preset object
   const activePreset =
     presets.find((p) => p.id === activePresetId) || presets[0] || DEFAULT_PRESETS[0];
 
-  // Handle spin end & winner selection
+  // Handle spin end & winner selection (broadcasts to all connected screens in room)
   const handleSpinEnd = useCallback(
     (winnerItem: WheelItem) => {
       setIsSpinning(false);
@@ -352,45 +517,66 @@ export default function App() {
         presetName: activePreset ? activePreset.name : 'วงล้อจับรางวัล',
       };
 
-      // Add to winner history log
-      setHistory((prev) => [newRecord, ...prev]);
+      const updatedHistory = [newRecord, ...history];
+      setHistory(updatedHistory);
       setCurrentWinner(newRecord);
 
-      // Save winner record to Firebase Firestore if logged in
+      // Auto-remove winner if option enabled
+      let updatedItems = items;
+      let removed = false;
+      if (settings.autoRemoveWinner) {
+        updatedItems = items.filter((it) => it.id !== winnerItem.id);
+        setItems(updatedItems);
+        removed = true;
+      }
+      setLastAutoRemoved(removed);
+
+      // Save winner record to Firebase Firestore user collection if logged in
       if (currentUser) {
         saveWinnerToFirestore(currentUser.uid, newRecord).catch((err) =>
           console.error('Failed to save winner to Firebase:', err)
         );
       }
 
-      // Auto-remove winner if option enabled!
-      let removed = false;
-      if (settings.autoRemoveWinner) {
-        setItems((prevItems) => prevItems.filter((it) => it.id !== winnerItem.id));
-        removed = true;
+      // Broadcast winner, remaining items, and history to all connected screens in Sala room
+      if (currentRoomId) {
+        broadcastRoomWinner(
+          currentRoomId,
+          newRecord,
+          updatedItems,
+          updatedHistory,
+          currentRoomId
+        ).catch((err) => console.error('Failed to broadcast winner to room:', err));
       }
-      setLastAutoRemoved(removed);
 
       // Show winner popup
       if (settings.showWinnerModal) {
         setShowWinnerModal(true);
       }
     },
-    [history.length, activePreset, settings.autoRemoveWinner, settings.showWinnerModal, currentUser]
+    [history, activePreset, settings.autoRemoveWinner, settings.showWinnerModal, currentUser, currentRoomId, items]
   );
 
   // Restore winner to wheel (Undo removal)
   const handleRestoreWinner = (item: WheelItem) => {
     // Check if item already exists
     if (!items.some((it) => it.id === item.id)) {
-      setItems((prev) => [...prev, { ...item, enabled: true }]);
+      const newItems = [...items, { ...item, enabled: true }];
+      setItems(newItems);
+      if (currentRoomId) {
+        updateRoomState(currentRoomId, { items: newItems, updatedBy: currentRoomId }).catch(console.error);
+      }
     }
   };
 
   // Manually remove winner from wheel
   const handleRemoveWinnerManually = (item: WheelItem) => {
-    setItems((prev) => prev.filter((it) => it.id !== item.id));
+    const newItems = items.filter((it) => it.id !== item.id);
+    setItems(newItems);
     setLastAutoRemoved(true);
+    if (currentRoomId) {
+      updateRoomState(currentRoomId, { items: newItems, updatedBy: currentRoomId }).catch(console.error);
+    }
   };
 
   // Export screenshot of current wheel
@@ -405,17 +591,31 @@ export default function App() {
     if (confirm('คุณต้องการรีเซ็ตรายชื่อในวงล้อกลับเป็นค่าเริ่มต้นของพรีเซ็ตนี้ใช่หรือไม่?')) {
       if (activePreset) {
         setItems([...activePreset.items]);
+        if (currentRoomId) {
+          updateRoomState(currentRoomId, {
+            items: [...activePreset.items],
+            updatedBy: currentRoomId,
+          }).catch(console.error);
+        }
       }
     }
   };
 
   // Quick toggle auto-remove winner mode
   const handleToggleAutoRemove = () => {
-    setSettings((prev) => ({
-      ...prev,
-      autoRemoveWinner: !prev.autoRemoveWinner,
-    }));
+    const newAutoRemove = !settings.autoRemoveWinner;
+    const newSettings = {
+      ...settings,
+      autoRemoveWinner: newAutoRemove,
+    };
+    setSettings(newSettings);
     if (settings.soundEnabled) playClickSound(settings.soundVolume);
+    if (currentRoomId && !isRemoteUpdatingRef.current) {
+      updateRoomState(currentRoomId, {
+        settings: newSettings,
+        updatedBy: currentRoomId,
+      }).catch(console.error);
+    }
   };
 
   return (
@@ -451,15 +651,31 @@ export default function App() {
               </h1>
               <p className="text-[10px] sm:text-xs text-slate-400 truncate flex items-center gap-1">
                 <span>{activePreset ? activePreset.name : 'สุ่มผู้โชคดี'} • รอบที่ {history.length + 1}</span>
-                <span className="text-[10px] text-amber-300/80">
-                  {currentUser ? '• Cloud Synced ☁️' : ''}
-                </span>
+                {currentRoomId && (
+                  <span className="text-[10px] text-emerald-300 font-semibold">
+                    • ศาลา {currentRoomId.replace('sala', '')} ซิงค์สด 🟢
+                  </span>
+                )}
+                {currentUser && !currentRoomId && (
+                  <span className="text-[10px] text-amber-300/80">
+                    • Cloud Synced ☁️
+                  </span>
+                )}
               </p>
             </div>
           </div>
 
           {/* Action Toolbar */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Real-time Multi-Screen Sala Room Status (sala1, sala2, sala3) */}
+            <SalaHeaderStatus
+              currentRoomId={currentRoomId}
+              isDisplayMode={isDisplayMode}
+              onOpenModal={() => setShowSalaLoginModal(true)}
+              onToggleDisplayMode={() => setIsDisplayMode(!isDisplayMode)}
+              isSyncing={isRoomSyncing}
+            />
+
             {/* Firebase Google Auth & Cloud Sync Button */}
             <AuthButton user={currentUser} isSyncing={isSyncing} />
 
@@ -569,6 +785,7 @@ export default function App() {
                 isSpinning={isSpinning}
                 onSpinStart={handleSpinStart}
                 onSpinEnd={handleSpinEnd}
+                externalSpinTrigger={externalSpinTrigger}
                 canvasRefCallback={(c) => {
                   wheelCanvasRef.current = c;
                 }}
@@ -593,7 +810,7 @@ export default function App() {
 
               <CandidateEditor
                 items={items}
-                onItemsChange={setItems}
+                onItemsChange={handleCandidateItemsChange}
                 disabled={isSpinning}
               />
             </div>
@@ -630,107 +847,153 @@ export default function App() {
         </div>
 
         {/* ========================================================= */}
-        {/* TABLET & DESKTOP WORKSPACE (md+: >= 768px): Dual Panes    */}
+        {/* TABLET & DESKTOP WORKSPACE (md+: >= 768px)                */}
         {/* ========================================================= */}
-        <div className="hidden md:grid md:grid-cols-1 lg:grid-cols-12 gap-5 items-start flex-1">
-          {/* LEFT: Grand Wheel Canvas Area (7 Cols on desktop, full width on tablet portrait) */}
-          <div className="wheel-card-container lg:col-span-7 flex flex-col items-center justify-center bg-slate-950/40 backdrop-blur-md rounded-3xl border border-white/10 p-4 lg:p-6 shadow-2xl relative overflow-hidden w-full">
-            {/* Auto-remove badge notice & toggle */}
-            <div className="w-full flex items-center justify-between px-2 pb-2 text-xs text-slate-400">
-              <button
-                onClick={handleToggleAutoRemove}
-                disabled={isSpinning}
-                className="flex items-center gap-2 py-1 px-3 rounded-full bg-slate-900/80 border border-slate-700/80 hover:border-amber-400/50 transition cursor-pointer"
-                title="คลิกเพื่อสลับโหมดลบผู้ชนะออกจากวงล้ออัตโนมัติ"
-              >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    settings.autoRemoveWinner ? 'bg-amber-400 animate-ping' : 'bg-slate-500'
+        {isDisplayMode ? (
+          /* STAGE / DISPLAY MODE: Big Centered Wheel for TV / Projectors */
+          <div className="hidden md:flex flex-col items-center justify-center flex-1 w-full max-w-5xl mx-auto animate-in fade-in duration-300">
+            <div className="wheel-card-container w-full flex flex-col items-center justify-center bg-slate-950/50 backdrop-blur-md rounded-3xl border border-sky-500/30 p-5 lg:p-8 shadow-2xl relative overflow-hidden">
+              {/* Display Mode Bar */}
+              <div className="w-full flex items-center justify-between pb-3 px-2 border-b border-white/10 mb-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  </span>
+                  <span className="font-bold text-sm text-emerald-400">
+                    {currentRoomId
+                      ? `จอแสดงผลเวที: ศาลา ${currentRoomId.replace('sala', '')} (${currentRoomId})`
+                      : 'โหมดจอแสดงผลเวที / ขยายวงล้อใหญ่'}
+                  </span>
+                  <span className="text-xs text-slate-400 hidden lg:inline">
+                    • ซิงค์เรียลไทม์สด ทุกจอหมุนพร้อมกัน
+                  </span>
+                </div>
+                <button
+                  onClick={() => setIsDisplayMode(false)}
+                  className="text-xs px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition cursor-pointer"
+                >
+                  กลับสู่โหมดควบคุม
+                </button>
+              </div>
+
+              {/* Grand Canvas Wheel */}
+              <WheelCanvas
+                items={items}
+                settings={settings}
+                isSpinning={isSpinning}
+                onSpinStart={handleSpinStart}
+                onSpinEnd={handleSpinEnd}
+                externalSpinTrigger={externalSpinTrigger}
+                canvasRefCallback={(c) => {
+                  wheelCanvasRef.current = c;
+                }}
+              />
+            </div>
+          </div>
+        ) : (
+          /* STANDARD DUAL PANES WORKSPACE */
+          <div className="hidden md:grid md:grid-cols-1 lg:grid-cols-12 gap-5 items-start flex-1">
+            {/* LEFT: Grand Wheel Canvas Area (7 Cols on desktop, full width on tablet portrait) */}
+            <div className="wheel-card-container lg:col-span-7 flex flex-col items-center justify-center bg-slate-950/40 backdrop-blur-md rounded-3xl border border-white/10 p-4 lg:p-6 shadow-2xl relative overflow-hidden w-full">
+              {/* Auto-remove badge notice & toggle */}
+              <div className="w-full flex items-center justify-between px-2 pb-2 text-xs text-slate-400">
+                <button
+                  onClick={handleToggleAutoRemove}
+                  disabled={isSpinning}
+                  className="flex items-center gap-2 py-1 px-3 rounded-full bg-slate-900/80 border border-slate-700/80 hover:border-amber-400/50 transition cursor-pointer"
+                  title="คลิกเพื่อสลับโหมดลบผู้ชนะออกจากวงล้ออัตโนมัติ"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      settings.autoRemoveWinner ? 'bg-amber-400 animate-ping' : 'bg-slate-500'
+                    }`}
+                  />
+                  <span className="font-medium text-slate-200">
+                    {settings.autoRemoveWinner
+                      ? 'โหมด: ลบผู้ชนะออกจากวงล้ออัตโนมัติ (เปิดอยู่)'
+                      : 'โหมด: เก็บผู้ชนะไว้ในวงล้อ (ปิดอยู่)'}
+                  </span>
+                </button>
+
+                <button
+                  onClick={handleResetCurrentWheel}
+                  disabled={isSpinning}
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-amber-300 transition cursor-pointer"
+                  title="รีเซ็ตรายชื่อกลับเป็นค่าเดิมของพรีเซ็ต"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>รีเซ็ตรายชื่อ</span>
+                </button>
+              </div>
+
+              {/* Canvas Wheel Component */}
+              <WheelCanvas
+                items={items}
+                settings={settings}
+                isSpinning={isSpinning}
+                onSpinStart={handleSpinStart}
+                onSpinEnd={handleSpinEnd}
+                externalSpinTrigger={externalSpinTrigger}
+                canvasRefCallback={(c) => {
+                  wheelCanvasRef.current = c;
+                }}
+              />
+            </div>
+
+            {/* RIGHT: Candidate & Preset Panels (5 Cols on desktop, tabbed on tablet) */}
+            <div className="lg:col-span-5 flex flex-col gap-3">
+              {/* Tab switch bar */}
+              <div className="flex rounded-2xl bg-slate-900/90 border border-slate-800 p-1 backdrop-blur-md shadow-lg">
+                <button
+                  onClick={() => setActiveTab('items')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer min-h-[44px] ${
+                    activeTab === 'items'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                   }`}
-                />
-                <span className="font-medium text-slate-200">
-                  {settings.autoRemoveWinner
-                    ? 'โหมด: ลบผู้ชนะออกจากวงล้ออัตโนมัติ (เปิดอยู่)'
-                    : 'โหมด: เก็บผู้ชนะไว้ในวงล้อ (ปิดอยู่)'}
-                </span>
-              </button>
+                >
+                  <ListFilter className="w-4 h-4" />
+                  <span>รายชื่อ & ปรับแต่งสี ({items.length})</span>
+                </button>
 
-              <button
-                onClick={handleResetCurrentWheel}
-                disabled={isSpinning}
-                className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-amber-300 transition cursor-pointer"
-                title="รีเซ็ตรายชื่อกลับเป็นค่าเดิมของพรีเซ็ต"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>รีเซ็ตรายชื่อ</span>
-              </button>
-            </div>
+                <button
+                  onClick={() => setActiveTab('presets')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer min-h-[44px] ${
+                    activeTab === 'presets'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <Star className="w-4 h-4" />
+                  <span>รายการโปรด ({presets.length})</span>
+                </button>
+              </div>
 
-            {/* Canvas Wheel Component */}
-            <WheelCanvas
-              items={items}
-              settings={settings}
-              isSpinning={isSpinning}
-              onSpinStart={handleSpinStart}
-              onSpinEnd={handleSpinEnd}
-              canvasRefCallback={(c) => {
-                wheelCanvasRef.current = c;
-              }}
-            />
-          </div>
-
-          {/* RIGHT: Candidate & Preset Panels (5 Cols on desktop, tabbed on tablet) */}
-          <div className="lg:col-span-5 flex flex-col gap-3">
-            {/* Tab switch bar */}
-            <div className="flex rounded-2xl bg-slate-900/90 border border-slate-800 p-1 backdrop-blur-md shadow-lg">
-              <button
-                onClick={() => setActiveTab('items')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'items'
-                    ? 'bg-indigo-600 text-white shadow-md'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
-              >
-                <ListFilter className="w-4 h-4" />
-                <span>รายชื่อ & ปรับแต่งสี ({items.length})</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('presets')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'presets'
-                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
-              >
-                <Star className="w-4 h-4" />
-                <span>รายการโปรด ({presets.length})</span>
-              </button>
-            </div>
-
-            {/* Active Tab Panel */}
-            <div className="flex-1">
-              {activeTab === 'items' ? (
-                <CandidateEditor
-                  items={items}
-                  onItemsChange={setItems}
-                  disabled={isSpinning}
-                />
-              ) : (
-                <PresetManager
-                  presets={presets}
-                  activePresetId={activePresetId}
-                  currentItems={items}
-                  onSelectPreset={handleSelectPreset}
-                  onSavePreset={handleSavePreset}
-                  onDeletePreset={handleDeletePreset}
-                  onImportPresets={handleImportPresets}
-                  disabled={isSpinning}
-                />
-              )}
+              {/* Active Tab Panel */}
+              <div className="flex-1">
+                {activeTab === 'items' ? (
+                  <CandidateEditor
+                    items={items}
+                    onItemsChange={handleCandidateItemsChange}
+                    disabled={isSpinning}
+                  />
+                ) : (
+                  <PresetManager
+                    presets={presets}
+                    activePresetId={activePresetId}
+                    currentItems={items}
+                    onSelectPreset={handleSelectPreset}
+                    onSavePreset={handleSavePreset}
+                    onDeletePreset={handleDeletePreset}
+                    onImportPresets={handleImportPresets}
+                    disabled={isSpinning}
+                  />
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* ========================================================= */}
@@ -839,7 +1102,12 @@ export default function App() {
       {showBgCustomizer && (
         <BackgroundCustomizer
           config={bgConfig}
-          onChange={setBgConfig}
+          onChange={(newConfig) => {
+            setBgConfig(newConfig);
+            if (currentRoomId && !isRemoteUpdatingRef.current) {
+              updateRoomState(currentRoomId, { bgConfig: newConfig, updatedBy: currentRoomId }).catch(console.error);
+            }
+          }}
           onClose={() => setShowBgCustomizer(false)}
         />
       )}
@@ -855,6 +1123,9 @@ export default function App() {
               clearUserHistoryInFirestore(currentUser.uid).catch((err) =>
                 console.error('Failed to clear history in Firebase:', err)
               );
+            }
+            if (currentRoomId) {
+              updateRoomState(currentRoomId, { history: [], updatedBy: currentRoomId }).catch(console.error);
             }
           }}
           onRestoreWinner={handleRestoreWinner}
@@ -872,10 +1143,32 @@ export default function App() {
                 console.error('Failed to save settings to Firebase:', err)
               );
             }
+            if (currentRoomId && !isRemoteUpdatingRef.current) {
+              updateRoomState(currentRoomId, {
+                settings: newSettings,
+                updatedBy: currentRoomId,
+              }).catch(console.error);
+            }
           }}
           onClose={() => setShowSettingsModal(false)}
         />
       )}
+
+      {/* Sala Multi-Screen Login & Switcher Modal */}
+      <SalaLoginModal
+        currentRoomId={currentRoomId}
+        isOpen={showSalaLoginModal}
+        onClose={() => setShowSalaLoginModal(false)}
+        onLogin={(account, displayMode) => {
+          setCurrentRoomId(account.username);
+          if (displayMode !== undefined) setIsDisplayMode(displayMode);
+        }}
+        onLogout={() => {
+          setCurrentRoomId(null);
+        }}
+        isDisplayMode={isDisplayMode}
+        onToggleDisplayMode={() => setIsDisplayMode(!isDisplayMode)}
+      />
 
       {/* Offline Status Toast Indicator */}
       <OfflineIndicator />

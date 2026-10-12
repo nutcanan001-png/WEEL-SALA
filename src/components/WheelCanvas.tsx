@@ -7,9 +7,10 @@ interface WheelCanvasProps {
   items: WheelItem[];
   settings: WheelSettings;
   isSpinning: boolean;
-  onSpinStart: () => void;
+  onSpinStart: (targetWinnerId?: string) => void;
   onSpinEnd: (winner: WheelItem) => void;
   canvasRefCallback?: (canvas: HTMLCanvasElement | null) => void;
+  externalSpinTrigger?: { timestamp: number; targetWinnerId?: string } | null;
 }
 
 export const WheelCanvas: React.FC<WheelCanvasProps> = ({
@@ -19,6 +20,7 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
   onSpinStart,
   onSpinEnd,
   canvasRefCallback,
+  externalSpinTrigger,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const currentAngleRef = useRef<number>(0); // radians
@@ -26,6 +28,7 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
   const pointerDeflectionRef = useRef<number>(0);
   const lastTickSliceIndexRef = useRef<number>(-1);
   const touchStartPosRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const lastProcessedTriggerTimeRef = useRef<number>(0);
 
   // Active enabled items
   const activeItems = items.filter((item) => item.enabled);
@@ -403,10 +406,38 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
   );
 
   // Spin animation execution
-  const executeSpin = useCallback(() => {
+  const executeSpin = useCallback((targetWinnerId?: string, isExternal?: boolean) => {
     if (activeItems.length === 0 || isSpinning) return;
 
-    onSpinStart();
+    // Pick target winner index
+    let selectedIndex = 0;
+    const totalWeight = activeItems.reduce((acc, item) => acc + (item.weight || 1), 0);
+
+    if (targetWinnerId) {
+      const idx = activeItems.findIndex((it) => it.id === targetWinnerId);
+      if (idx !== -1) {
+        selectedIndex = idx;
+      } else {
+        selectedIndex = Math.floor(Math.random() * activeItems.length);
+      }
+    } else {
+      const randomWeight = Math.random() * totalWeight;
+      let weightSum = 0;
+      for (let i = 0; i < activeItems.length; i++) {
+        weightSum += activeItems[i].weight || 1;
+        if (randomWeight <= weightSum) {
+          selectedIndex = i;
+          break;
+        }
+      }
+    }
+
+    const winnerItem = activeItems[selectedIndex];
+
+    // Inform parent (unless this is already externally triggered)
+    if (!isExternal) {
+      onSpinStart(winnerItem?.id);
+    }
 
     if (settings.soundEnabled) {
       playSpinStartSound(settings.soundVolume);
@@ -418,20 +449,6 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
     const duration = Math.max(3, settings.spinDuration || 5) * 1000; // ms
     const startTime = performance.now();
     const startAngle = currentAngleRef.current;
-
-    // Pick random target winner index with weights
-    const totalWeight = activeItems.reduce((acc, item) => acc + (item.weight || 1), 0);
-    const randomWeight = Math.random() * totalWeight;
-    let selectedIndex = 0;
-    let weightSum = 0;
-
-    for (let i = 0; i < activeItems.length; i++) {
-      weightSum += activeItems[i].weight || 1;
-      if (randomWeight <= weightSum) {
-        selectedIndex = i;
-        break;
-      }
-    }
 
     // Determine target slice angular span
     let beforeWeight = 0;
@@ -484,7 +501,7 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
         if (settings.vibrationEnabled ?? true) {
           triggerHaptic('win', true);
         }
-        onSpinEnd(activeItems[selectedIndex]);
+        onSpinEnd(winnerItem);
       }
     };
 
@@ -501,6 +518,20 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
     drawWheel,
     onSpinEnd,
   ]);
+
+  // Synchronize with external real-time spin trigger from another screen
+  useEffect(() => {
+    if (
+      externalSpinTrigger &&
+      externalSpinTrigger.timestamp > lastProcessedTriggerTimeRef.current &&
+      Date.now() - externalSpinTrigger.timestamp < 12000 &&
+      !isSpinning &&
+      activeItems.length > 0
+    ) {
+      lastProcessedTriggerTimeRef.current = externalSpinTrigger.timestamp;
+      executeSpin(externalSpinTrigger.targetWinnerId, true);
+    }
+  }, [externalSpinTrigger, isSpinning, activeItems.length, executeSpin]);
 
   // Cleanup animation frame
   useEffect(() => {
@@ -590,7 +621,7 @@ export const WheelCanvas: React.FC<WheelCanvasProps> = ({
       {/* External Action Button */}
       <div className="mt-3 flex flex-col items-center gap-1.5 w-full max-w-sm px-2">
         <button
-          onClick={executeSpin}
+          onClick={() => executeSpin()}
           disabled={isSpinning || activeItems.length === 0}
           className={`w-full flex items-center justify-center gap-2.5 py-3.5 sm:py-4 px-6 rounded-2xl font-bold text-base sm:text-lg shadow-xl transition-all duration-200 cursor-pointer min-h-[48px] ${
             isSpinning || activeItems.length === 0

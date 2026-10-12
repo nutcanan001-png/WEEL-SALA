@@ -4,6 +4,8 @@ import {
   setDoc,
   deleteDoc,
   getDocs,
+  getDoc,
+  onSnapshot,
   serverTimestamp,
   writeBatch,
 } from 'firebase/firestore';
@@ -14,7 +16,7 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth';
 import { db, auth, googleProvider } from '../firebase';
-import { WheelPreset, WinnerRecord, WheelSettings } from '../types/wheel';
+import { WheelPreset, WinnerRecord, WheelSettings, RoomState, WheelItem } from '../types/wheel';
 import { handleFirestoreError, OperationType } from '../utils/firestoreError';
 
 // Auth functions
@@ -215,3 +217,144 @@ export async function fetchUserSettings(userId: string): Promise<WheelSettings |
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
+
+// =========================================================================
+// Real-Time Room State Sync across All Screens (sala1, sala2, sala3)
+// =========================================================================
+
+/**
+ * Subscribe in real-time to a room document in Firestore.
+ * Automatically triggers callback whenever any screen updates items, settings, spin state, etc.
+ */
+export function subscribeToRoom(
+  roomId: string,
+  onUpdate: (state: RoomState | null) => void,
+  onError?: (error: unknown) => void
+) {
+  const path = `rooms/${roomId}`;
+  const roomRef = doc(db, 'rooms', roomId);
+
+  return onSnapshot(
+    roomRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as RoomState;
+        onUpdate(data);
+      } else {
+        onUpdate(null);
+      }
+    },
+    (error) => {
+      console.error(`Error subscribing to room ${roomId}:`, error);
+      if (onError) onError(error);
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+  );
+}
+
+/**
+ * Initialize room document if it doesn't already exist.
+ */
+export async function ensureRoomInitialized(
+  roomId: string,
+  defaultRoomData: RoomState
+): Promise<RoomState> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const snap = await getDoc(roomRef);
+    if (snap.exists()) {
+      return snap.data() as RoomState;
+    }
+
+    // Create room with default state
+    await setDoc(roomRef, {
+      ...defaultRoomData,
+      updatedAt: Date.now(),
+    });
+    return defaultRoomData;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Broadcast full or partial room state update to all screens.
+ */
+export async function updateRoomState(
+  roomId: string,
+  partialState: Partial<RoomState>
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    await setDoc(
+      roomRef,
+      {
+        ...partialState,
+        updatedAt: Date.now(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Broadcast spin initiation to all connected screens in real-time.
+ */
+export async function broadcastRoomSpin(
+  roomId: string,
+  targetWinnerId: string,
+  updatedBy: string
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    await setDoc(
+      roomRef,
+      {
+        isSpinning: true,
+        spinTrigger: Date.now(),
+        targetWinnerId,
+        updatedAt: Date.now(),
+        updatedBy,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Broadcast winner announcement and update items/history to all connected screens.
+ */
+export async function broadcastRoomWinner(
+  roomId: string,
+  winner: WinnerRecord,
+  remainingItems: WheelItem[],
+  newHistory: WinnerRecord[],
+  updatedBy: string
+): Promise<void> {
+  const path = `rooms/${roomId}`;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    await setDoc(
+      roomRef,
+      {
+        isSpinning: false,
+        currentWinner: winner,
+        items: remainingItems,
+        history: newHistory,
+        updatedAt: Date.now(),
+        updatedBy,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+

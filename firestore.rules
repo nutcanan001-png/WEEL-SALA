@@ -68,6 +68,30 @@ service cloud.firestore {
         (!('updatedAt' in data) || data.updatedAt is number);
     }
 
+    function isValidRoom(data) {
+      return data.roomId is string && data.roomId.size() > 0 && data.roomId.size() <= 64 &&
+        data.pin is string && data.pin.size() > 0 && data.pin.size() <= 64 &&
+        data.items is list && data.items.size() <= 200 &&
+        data.updatedAt is number &&
+        (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+        (!('activePresetId' in data) || (data.activePresetId is string && data.activePresetId.size() <= 128)) &&
+        (!('history' in data) || (data.history is list && data.history.size() <= 200)) &&
+        (!('settings' in data) || data.settings is map) &&
+        (!('isSpinning' in data) || data.isSpinning is bool) &&
+        (!('spinTrigger' in data) || data.spinTrigger is number) &&
+        (!('targetWinnerId' in data) || (data.targetWinnerId is string && data.targetWinnerId.size() <= 128)) &&
+        (!('bgConfig' in data) || data.bgConfig is map) &&
+        (!('currentWinner' in data) || data.currentWinner is map) &&
+        (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 100));
+    }
+
+    // Real-Time Multi-Screen Shared Rooms (sala1, sala2, sala3)
+    match /rooms/{roomId} {
+      allow read: if isValidId(roomId);
+      allow create, update: if isValidId(roomId) && isValidRoom(incoming());
+      allow delete: if false;
+    }
+
     // User Profile Document
     match /users/{userId} {
       allow get: if isOwner(userId);

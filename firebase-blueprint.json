@@ -59,6 +59,28 @@
         "updatedAt": { "type": "number" }
       },
       "required": ["spinDuration", "autoRemoveWinner", "soundEnabled"]
+    },
+    "RoomState": {
+      "title": "RoomState",
+      "description": "Real-time synchronized wheel state across multiple screens for user rooms (sala1, sala2, sala3)",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string", "maxLength": 64 },
+        "pin": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "items": { "type": "array" },
+        "activePresetId": { "type": "string", "maxLength": 128 },
+        "history": { "type": "array" },
+        "settings": { "type": "object" },
+        "isSpinning": { "type": "boolean" },
+        "spinTrigger": { "type": "number" },
+        "targetWinnerId": { "type": "string", "maxLength": 128 },
+        "currentWinner": { "type": "object" },
+        "bgConfig": { "type": "object" },
+        "updatedAt": { "type": "number" },
+        "updatedBy": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["roomId", "pin", "items", "updatedAt"]
     }
   },
   "firestore": {
@@ -77,6 +99,10 @@
     "/users/{userId}/settings/{docId}": {
       "schema": "WheelSettingsDoc",
       "description": "Stores user preferences and settings in Firestore"
+    },
+    "/rooms/{roomId}": {
+      "schema": "RoomState",
+      "description": "Stores real-time synchronized wheel data across all connected screens for sala1, sala2, sala3"
     }
   }
 }
