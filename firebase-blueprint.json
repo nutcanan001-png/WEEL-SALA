@@ -1,0 +1,82 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 150 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "createdAt"]
+    },
+    "WheelPreset": {
+      "title": "WheelPreset",
+      "description": "Saved wheel prize preset configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 250 },
+        "items": { "type": "array" },
+        "createdAt": { "type": "number" },
+        "isDefault": { "type": "boolean" },
+        "userId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "name", "items", "createdAt"]
+    },
+    "WinnerRecord": {
+      "title": "WinnerRecord",
+      "description": "Historical record of a wheel prize draw winner",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "round": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "item": { "type": "object" },
+        "presetName": { "type": "string", "maxLength": 100 },
+        "userId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "round", "timestamp", "item", "presetName"]
+    },
+    "WheelSettingsDoc": {
+      "title": "WheelSettingsDoc",
+      "description": "User custom wheel settings document",
+      "type": "object",
+      "properties": {
+        "spinDuration": { "type": "number" },
+        "autoRemoveWinner": { "type": "boolean" },
+        "soundEnabled": { "type": "boolean" },
+        "soundVolume": { "type": "number" },
+        "confettiEnabled": { "type": "boolean" },
+        "showWinnerModal": { "type": "boolean" },
+        "wheelTheme": { "type": "string", "maxLength": 50 },
+        "vibrationEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["spinDuration", "autoRemoveWinner", "soundEnabled"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Stores user account profile information"
+    },
+    "/users/{userId}/presets/{presetId}": {
+      "schema": "WheelPreset",
+      "description": "Stores user wheel presets in Firestore"
+    },
+    "/users/{userId}/history/{historyId}": {
+      "schema": "WinnerRecord",
+      "description": "Stores user winner history log in Firestore"
+    },
+    "/users/{userId}/settings/{docId}": {
+      "schema": "WheelSettingsDoc",
+      "description": "Stores user preferences and settings in Firestore"
+    }
+  }
+}

@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global catch-all default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common security helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation functions for entities
+    function isValidUserProfile(data) {
+      return data.uid is string && data.uid.size() <= 128 && data.uid == request.auth.uid &&
+        data.createdAt is number &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 150)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        (!('updatedAt' in data) || data.updatedAt is number);
+    }
+
+    function isValidPreset(data) {
+      return data.id is string && data.id.size() <= 128 &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+        data.items is list && data.items.size() <= 200 &&
+        data.createdAt is number &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 250)) &&
+        (!('isDefault' in data) || data.isDefault is bool) &&
+        (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid));
+    }
+
+    function isValidWinnerRecord(data) {
+      return data.id is string && data.id.size() <= 128 &&
+        data.round is number &&
+        data.timestamp is number &&
+        data.item is map &&
+        data.presetName is string && data.presetName.size() <= 100 &&
+        (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid));
+    }
+
+    function isValidSettings(data) {
+      return data.spinDuration is number && data.spinDuration >= 2 && data.spinDuration <= 20 &&
+        data.autoRemoveWinner is bool &&
+        data.soundEnabled is bool &&
+        (!('soundVolume' in data) || (data.soundVolume is number && data.soundVolume >= 0 && data.soundVolume <= 1)) &&
+        (!('confettiEnabled' in data) || data.confettiEnabled is bool) &&
+        (!('showWinnerModal' in data) || data.showWinnerModal is bool) &&
+        (!('wheelTheme' in data) || (data.wheelTheme is string && data.wheelTheme.size() <= 50)) &&
+        (!('vibrationEnabled' in data) || data.vibrationEnabled is bool) &&
+        (!('updatedAt' in data) || data.updatedAt is number);
+    }
+
+    // User Profile Document
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidUserProfile(incoming());
+      allow delete: if false;
+
+      // User Presets Subcollection
+      match /presets/{presetId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(presetId) && isValidPreset(incoming());
+        allow update: if isOwner(userId) && isValidId(presetId) && isValidPreset(incoming()) && incoming().createdAt == existing().createdAt;
+        allow delete: if isOwner(userId) && isValidId(presetId);
+      }
+
+      // User History Subcollection
+      match /history/{historyId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(historyId) && isValidWinnerRecord(incoming());
+        allow delete: if isOwner(userId) && isValidId(historyId);
+      }
+
+      // User Settings Document
+      match /settings/{docId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(docId) && isValidSettings(incoming());
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+    }
+  }
+}

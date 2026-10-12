@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#312e81"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </radialGradient>
+    <linearGradient id="goldRim" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="100" fill="url(#bgGlow)"/>
+  <g transform="translate(256,256)" filter="url(#shadow)">
+    <!-- Outer gold border -->
+    <circle r="190" fill="url(#goldRim)"/>
+    <circle r="176" fill="#1e1b4b"/>
+    
+    <!-- 8 Slices -->
+    <!-- Slice 0 (0-45 deg) -->
+    <path d="M 0 0 L 165 0 A 165 165 0 0 1 116.67 116.67 Z" fill="#ef4444"/>
+    <!-- Slice 1 (45-90 deg) -->
+    <path d="M 0 0 L 116.67 116.67 A 165 165 0 0 1 0 165 Z" fill="#f97316"/>
+    <!-- Slice 2 (90-135 deg) -->
+    <path d="M 0 0 L 0 165 A 165 165 0 0 1 -116.67 116.67 Z" fill="#eab308"/>
+    <!-- Slice 3 (135-180 deg) -->
+    <path d="M 0 0 L -116.67 116.67 A 165 165 0 0 1 -165 0 Z" fill="#22c55e"/>
+    <!-- Slice 4 (180-225 deg) -->
+    <path d="M 0 0 L -165 0 A 165 165 0 0 1 -116.67 -116.67 Z" fill="#06b6d4"/>
+    <!-- Slice 5 (225-270 deg) -->
+    <path d="M 0 0 L -116.67 -116.67 A 165 165 0 0 1 0 -165 Z" fill="#3b82f6"/>
+    <!-- Slice 6 (270-315 deg) -->
+    <path d="M 0 0 L 0 -165 A 165 165 0 0 1 116.67 -116.67 Z" fill="#8b5cf6"/>
+    <!-- Slice 7 (315-360 deg) -->
+    <path d="M 0 0 L 116.67 -116.67 A 165 165 0 0 1 165 0 Z" fill="#ec4899"/>
+
+    <!-- Perimeter lights -->
+    <circle cx="0" cy="-183" r="5" fill="#fef08a"/>
+    <circle cx="129" cy="-129" r="5" fill="#fef08a"/>
+    <circle cx="183" cy="0" r="5" fill="#fef08a"/>
+    <circle cx="129" cy="129" r="5" fill="#fef08a"/>
+    <circle cx="0" cy="183" r="5" fill="#fef08a"/>
+    <circle cx="-129" cy="129" r="5" fill="#fef08a"/>
+    <circle cx="-183" cy="0" r="5" fill="#fef08a"/>
+    <circle cx="-129" cy="-129" r="5" fill="#fef08a"/>
+
+    <!-- Center Hub -->
+    <circle r="46" fill="url(#goldRim)"/>
+    <circle r="36" fill="#1e1b4b"/>
+    <polygon points="0,-16 5,-5 16,-5 8,3 11,14 0,7 -11,14 -8,3 -16,-5 -5,-5" fill="#fef08a"/>
+
+    <!-- Top Pointer -->
+    <polygon points="0,-195 -18,-225 18,-225" fill="#ef4444" stroke="#ffffff" stroke-width="3"/>
+    <circle cx="0" cy="-225" r="7" fill="#fbbf24"/>
+  </g>
+</svg>
